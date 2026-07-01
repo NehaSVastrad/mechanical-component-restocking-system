@@ -1,0 +1,239 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SMARTBIN — Weight-Based Restocking Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --cyan: #00f5ff; --green: #00ff88; --yellow: #ffcc00; --red: #ff2244; --magenta: #ff00aa;
+  --bg-void: #020408; --bg-panel: rgba(0,20,35,0.88); --border-glow: rgba(0,245,255,0.25);
+  --font-display: 'Orbitron', monospace; --font-mono: 'Share Tech Mono', monospace;
+}
+
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  background:var(--bg-void); color:#e0f8ff; font-family:'Rajdhani',sans-serif;
+  min-height:100vh; overflow-x:hidden; cursor:none;
+}
+
+#cursor,#cursor-ring {position:fixed;border-radius:50%;pointer-events:none;z-index:99999;}
+#cursor {width:12px;height:12px;background:var(--cyan);box-shadow:0 0 12px var(--cyan);}
+#cursor-ring {width:36px;height:36px;border:1.5px solid rgba(0,245,255,0.5);transform:translate(-50%,-50%);}
+
+#grid-bg,#scanline {position:fixed;inset:0;z-index:0;pointer-events:none;}
+#scanline {background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.08) 2px,rgba(0,0,0,0.08) 4px);animation:scanMove 8s linear infinite;}
+@keyframes scanMove {0%{background-position:0 0}100%{background-position:0 120px}}
+
+header {
+  position:fixed;top:0;left:0;right:0;height:68px;background:rgba(2,4,8,0.95);z-index:1000;
+  display:flex;align-items:center;justify-content:space-between;padding:0 40px;border-bottom:1px solid var(--border-glow);
+}
+
+.bin-grid {
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;padding:20px;
+}
+
+.bin-card {
+  background:var(--bg-panel);border:2px solid var(--border-glow);border-radius:6px;padding:20px;transition:all 0.3s;
+}
+.bin-card.low {border-color:var(--yellow);}
+.bin-card.critical {border-color:var(--red);animation:warningFlash 1.2s infinite;}
+
+.progress-bar {height:10px;background:rgba(255,255,255,0.1);border-radius:4px;overflow:hidden;margin:12px 0;}
+.progress-fill {height:100%;transition:width 0.8s ease;}
+
+@keyframes warningFlash {0%,100%{background:rgba(255,34,68,0.08);}50%{background:rgba(255,34,68,0.22);}}
+
+.alert-btn {
+  padding:14px 32px; background:var(--red); color:white; border:none; font-family:var(--font-display);
+  font-size:1.1rem; cursor:pointer; border-radius:4px; margin:10px 0;
+}
+.alert-btn:hover {background:#ff4444; transform:scale(1.03);}
+</style>
+</head>
+<body>
+
+<div id="cursor"></div>
+<div id="cursor-ring"></div>
+<div id="grid-bg"></div>
+<div id="scanline"></div>
+
+<header>
+  <div style="font-family:var(--font-display);font-size:1.7rem;color:var(--green);">SMART<span style="color:var(--cyan)">BIN</span></div>
+  <div style="font-family:var(--font-mono);color:#88ddff;">WEIGHT-BASED RESTOCKING • LOAD CELL SYSTEM</div>
+  <button onclick="openLowStockWindow()" class="alert-btn">⚠ OPEN LOW STOCK ALERT WINDOW</button>
+</header>
+
+<div style="max-width:1480px;margin:90px auto 40px;padding:0 30px;">
+
+  <!-- Stats -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:30px;">
+    <div style="background:var(--bg-panel);padding:18px;border:1px solid var(--border-glow);">
+      <div style="font-family:var(--font-mono);font-size:0.7rem;color:#99ccff;">ACTIVE BINS</div>
+      <div style="font-size:2.4rem;font-weight:900;color:var(--cyan);">38</div>
+    </div>
+    <div style="background:var(--bg-panel);padding:18px;border:1px solid var(--border-glow);">
+      <div style="font-family:var(--font-mono);font-size:0.7rem;color:#99ccff;">LOW STOCK</div>
+      <div style="font-size:2.4rem;font-weight:900;color:var(--yellow);" id="low-count">8</div>
+    </div>
+    <div style="background:var(--bg-panel);padding:18px;border:1px solid var(--border-glow);">
+      <div style="font-family:var(--font-mono);font-size:0.7rem;color:#99ccff;">RESTOCKED TODAY</div>
+      <div style="font-size:2.4rem;font-weight:900;color:var(--green);">23</div>
+    </div>
+  </div>
+
+  <!-- ALL BINS -->
+  <h2 style="font-family:var(--font-display);color:var(--cyan);margin:20px 0 15px;">ALL INVENTORY BINS</h2>
+  <div class="bin-grid" id="bin-grid"></div>
+</div>
+
+<script>
+// Comprehensive Parts List
+const bins = [
+  {id:1,name:"Cylinder Block (Barrel)",current:2680,capacity:4100,threshold:920,location:"Rack A-01"},
+  {id:2,name:"Piston + Shoe Assembly",current:1150,capacity:2600,threshold:650,location:"Rack A-02"},
+  {id:3,name:"Valve Plate (R)",current:390,capacity:920,threshold:260,location:"Rack B-01"},
+  {id:4,name:"Valve Plate (L)",current:405,capacity:920,threshold:260,location:"Rack B-02"},
+  {id:5,name:"Swash Plate",current:1490,capacity:2400,threshold:680,location:"Rack C-03"},
+  {id:6,name:"Shoe Plate (Thrust)",current:760,capacity:1500,threshold:410,location:"Rack C-04"},
+  {id:7,name:"Drive Shaft Front",current:610,capacity:1150,threshold:340,location:"Rack D-02"},
+  {id:8,name:"Regulator Assembly",current:1340,capacity:2050,threshold:610,location:"Rack E-01"},
+  {id:9,name:"Servo Piston",current:465,capacity:980,threshold:280,location:"Rack E-02"},
+  {id:10,name:"Seal Kit + O-rings",current:220,capacity:780,threshold:160,location:"Rack F-01"},
+  {id:11,name:"Piston Rings",current:380,capacity:1200,threshold:220,location:"Rack G-01"},
+  {id:12,name:"Crankshaft",current:1850,capacity:2800,threshold:950,location:"Rack H-01"},
+  {id:13,name:"Camshaft",current:920,capacity:1600,threshold:480,location:"Rack H-02"},
+  {id:14,name:"Connecting Rods",current:1240,capacity:2200,threshold:650,location:"Rack I-01"},
+  {id:15,name:"Clutch Plates",current:1450,capacity:2800,threshold:720,location:"Rack M-01"},
+  {id:16,name:"Brake Pads & Discs",current:980,capacity:2400,threshold:520,location:"Rack N-01"},
+  {id:17,name:"Bearings (Roller/Needle)",current:890,capacity:2100,threshold:420,location:"Rack L-01"},
+  {id:18,name:"Hex Bolts & Fasteners",current:2150,capacity:5000,threshold:1100,location:"Rack O-01"},
+  {id:19,name:"Snap Rings & Retainers",current:480,capacity:1200,threshold:240,location:"Rack P-01"},
+  {id:20,name:"Sprockets & Chains",current:1350,capacity:2600,threshold:680,location:"Rack Q-01"},
+  {id:21,name:"Bushings & Vibration Dampers",current:780,capacity:1600,threshold:390,location:"Rack R-01"},
+  {id:22,name:"Fuel Injectors",current:680,capacity:1400,threshold:350,location:"Rack W-01"},
+  {id:23,name:"Suspension Links",current:950,capacity:1900,threshold:480,location:"Rack X-01"},
+  {id:24,name:"Mounting Brackets",current:1320,capacity:3000,threshold:650,location:"Rack Y-01"}
+];
+
+function getStatus(bin) {
+  if (bin.current < bin.threshold * 0.55) return {cls:'critical', color:'red', label:'CRITICAL'};
+  if (bin.current < bin.threshold) return {cls:'low', color:'yellow', label:'LOW STOCK'};
+  return {cls:'good', color:'green', label:'NORMAL'};
+}
+
+function renderBins() {
+  const container = document.getElementById('bin-grid');
+  container.innerHTML = '';
+
+  bins.forEach(bin => {
+    const pct = Math.round((bin.current / bin.capacity) * 100);
+    const st = getStatus(bin);
+
+    const card = document.createElement('div');
+    card.className = `bin-card ${st.cls}`;
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;">
+        <div>
+          <div style="font-family:var(--font-display);font-size:1.15rem;">${bin.name}</div>
+          <div style="font-size:0.8rem;color:#88bbdd;">${bin.location}</div>
+        </div>
+        <div style="text-align:right;font-size:2.1rem;font-weight:700;color:var(--cyan);">${bin.current}<span style="font-size:0.55rem;">g</span></div>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${st.color}"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:0.85rem;">
+        <span>${pct}% FULL</span>
+        <span style="color:${st.color};font-weight:700;">${st.label}</span>
+      </div>
+      <button onclick="restockBin(${bin.id})" style="margin-top:16px;width:100%;padding:12px;background:rgba(0,255,136,0.12);border:1px solid var(--green);color:var(--green);cursor:pointer;">RESTOCK BIN</button>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function restockBin(id) {
+  const bin = bins.find(b => b.id === id);
+  bin.current = Math.min(bin.capacity, bin.current + Math.floor(Math.random()*1100 + 650));
+  renderBins();
+}
+
+function openLowStockWindow() {
+  const lowBins = bins.filter(b => b.current < b.threshold);
+  
+  let htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>⚠ LOW STOCK ALERT — RESTOCK URGENT</title>
+      <style>
+        body { background:#0a0011; color:#ffdddd; font-family:Arial; padding:20px; }
+        h1 { color:#ff2244; text-align:center; }
+        .item { background:#220011; padding:18px; margin:12px 0; border-left:6px solid #ff2244; border-radius:4px; }
+        button { padding:12px 24px; background:#ff2244; color:white; border:none; cursor:pointer; font-weight:bold; }
+      </style>
+    </head>
+    <body>
+      <h1>⚠ LOW STOCK ALERT WINDOW</h1>
+      <p style="text-align:center;color:#ffcc88;">Real-time Load Cell Monitoring • Stable Rack Active</p>
+  `;
+
+  if (lowBins.length === 0) {
+    htmlContent += `<h2 style="color:#00ff88;text-align:center;">✅ All bins are sufficiently stocked.</h2>`;
+  } else {
+    lowBins.forEach(bin => {
+      htmlContent += `
+        <div class="item">
+          <strong>${bin.name}</strong><br>
+          <small>Location: ${bin.location} | Current: ${bin.current}g | Threshold: ${bin.threshold}g</small><br><br>
+          <button onclick="window.opener.restockBin(${bin.id}); window.location.reload();">RESTOCK THIS BIN NOW</button>
+        </div>
+      `;
+    });
+  }
+
+  htmlContent += `</body></html>`;
+
+  const popup = window.open('', '_blank', 'width=900,height=700,scrollbars=yes');
+  popup.document.write(htmlContent);
+  popup.document.close();
+}
+
+// Simulate removals
+function simulateRemoval() {
+  bins.forEach(bin => {
+    if (Math.random() > 0.76) {
+      bin.current = Math.max(80, bin.current - Math.floor(Math.random()*280 + 50));
+    }
+  });
+  renderBins();
+}
+
+// Init
+window.onload = () => {
+  renderBins();
+  setInterval(simulateRemoval, 6500);
+
+  // Cursor
+  let mx=0,my=0,rx=0,ry=0;
+  const cursor = document.getElementById('cursor');
+  const ring = document.getElementById('cursor-ring');
+
+  document.addEventListener('mousemove', e => {
+    mx = e.clientX; my = e.clientY;
+    cursor.style.left = mx+'px';
+    cursor.style.top = my+'px';
+  });
+
+  function ringAnim() {
+    rx += (mx-rx)*0.13; ry += (my-ry)*0.13;
+    ring.style.left = rx+'px'; ring.style.top = ry+'px';
+    requestAnimationFrame(ringAnim);
+  }
+  ringAnim();
+};
+</script>
+</body>
+</html>
